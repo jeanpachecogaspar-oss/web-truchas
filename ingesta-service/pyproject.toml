@@ -1,0 +1,28 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "RUF"]
+
+# N818 exige que las excepciones terminen en "Error". El codigo del proyecto
+# esta escrito en castellano y el nucleo en PHP nombra sus excepciones del mismo
+# modo (ErrorDeValidacion, AlertaYaAtendida, RolNoAutorizado). Anadir un sufijo
+# ingles solo en Python romperia esa correspondencia sin ganar claridad.
+ignore = ["N818"]
+
+[tool.ruff.lint.isort]
+# conftest es un modulo local de la suite de integracion, no un paquete
+# instalado: sin declararlo, Ruff lo ordena entre las dependencias de terceros.
+known-first-party = ["app", "conftest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# El paquete app vive en la raiz del servicio, no instalado. `python -m pytest`
+# anade el directorio actual a sys.path y el script `pytest` no, de modo que sin
+# esta linea la suite depende de como se invoque: pasa en local y falla en
+# integracion continua con cinco errores de recoleccion.
+pythonpath = ["."]
+addopts = "-q --cov=app --cov-report=term-missing --cov-fail-under=80"
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"

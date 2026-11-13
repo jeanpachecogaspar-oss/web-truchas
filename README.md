@@ -1,0 +1,425 @@
+# SIPPT — Sistema Inteligente para la Optimización de la Producción Piscícola de Trucha
+
+**Primer Incremento · Producto Mínimo Viable (PMV) · `v0.1.0-pmv`**
+
+Asignatura Procesos de Software (ASUC01702) — Universidad Continental, Huancayo.
+
+**Estado: Primer Incremento completo.** Las cinco historias del PMV están
+implementadas y verificadas de extremo a extremo.
+
+[![CI](https://github.com/PK-251/CriaderodeTrucha/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/PK-251/CriaderodeTrucha/actions/workflows/ci.yml)
+
+---
+
+## 1. Descripción del proyecto
+
+El manejo tradicional de una piscigranja de trucha es **reactivo**: las variaciones
+de oxígeno disuelto, temperatura y pH solo se detectan cuando ya hay estrés o
+mortalidad visible. El PMV sustituye esa detección tardía por un aviso automático
+mientras la condición todavía es reversible.
+
+### Alcance del PMV (Incremento 1)
+
+| Historia | Actor | Funcionalidad |
+|---|---|---|
+| HU-01 | Técnico acuícola | Registrar estanques (volumen, biomasa, etapa) y configurar umbrales aceptables y críticos de OD, temperatura y pH |
+| HU-02 | Nodo sensor IoT | Transmitir lecturas cada 5 min vía MQTT, con búfer y reenvío sin duplicados |
+| HU-03 | Operador | Tablero con semáforo por estanque, última lectura y marca de «sin comunicación» |
+| HU-04 | Sistema | Evaluar cada lectura contra los umbrales y generar alerta clasificada por severidad, sin duplicar alertas abiertas |
+| HU-05 | Operador | Registrar la acción tomada frente a una alerta y cerrarla con observación |
+
+### Requisitos no funcionales exigidos al código
+
+- **RNF-01** — aviso al operador en menos de 5 minutos desde la medición
+- **RNF-02** — búfer del gateway sin pérdida de lecturas ante caída de enlace
+- **RNF-03** — tablero de hasta 20 estanques en menos de 3 segundos
+- **RNF-04** — toda escritura auditada con usuario y marca temporal
+
+### El trabajo en tres bloques
+
+Cada bloque es abordable por separado una vez cerrado el contrato
+(`docs/openapi.yaml` + el DDL), que es la frontera entre los tres.
+
+| Bloque | Qué cubre | Estado |
+|---|---|---|
+| **1 · Backend** | Esquema, núcleo hexagonal, persistencia, notificadores, pruebas unitarias | ✅ 93 pruebas · 100 % del dominio |
+| **2 · APIs** | Contrato OpenAPI, 6 endpoints REST, ingesta MQTT, integración | ✅ 83 pruebas · RNF-01 en 27.6 s |
+| **3 · Frontend** | Maquetado, componentes, conexión, tiempo real, pruebas de UI | ✅ 20 pruebas · RNF-03 en 2.20 s |
+
+Detalle de las trece fases, con su DoD y el comando que lo verifica:
+[`docs/BLOQUES.md`](docs/BLOQUES.md).
+
+Para presentar el trabajo —metodología, estructura, decisiones y resultados
+medidos, con las preguntas que conviene anticipar—:
+[`docs/GUIA_DE_EXPOSICION.md`](docs/GUIA_DE_EXPOSICION.md).
+
+Para la demostración en vivo (Diapositiva 5) —capturas, guion de dos minutos y
+los criterios de aceptación de HU-01 a HU-03 validados con
+`scripts/demo_pmv.sh`—: [`docs/demo/DIAPOSITIVA_5.md`](docs/demo/DIAPOSITIVA_5.md).
+
+### Fuera del alcance
+
+Modelo predictivo de aprendizaje automático, cálculo de ración óptima y FCR,
+módulo de sanidad veterinaria, reportes gerenciales, aplicación móvil nativa y
+el parámetro amonio (NH₄), que se difiere al Incremento 2.
+
+---
+
+## 2. Requisitos previos
+
+| Herramienta | Versión mínima | Obligatorio |
+|---|---|---|
+| Docker | 24 o superior | Sí |
+| Docker Compose | v2 | Sí |
+| Git | — | Sí |
+| PHP | 8.3 | Opcional — solo para ejecución sin contenedores |
+| Node.js | 20 | Opcional — solo para ejecución sin contenedores |
+| Python | 3.12 | Opcional — solo para ejecución sin contenedores |
+| Composer | 2.x | Opcional — recomendado para PHPStan y Pint en local |
+
+Todo el stack (PHP 8.3, Node 20, Python 3.12, PostgreSQL 16 + TimescaleDB y
+Mosquitto) viene fijado dentro de los contenedores; no hace falta instalarlo
+en el sistema anfitrión.
+
+---
+
+## 3. Instalación y ejecución
+
+```bash
+git clone https://github.com/PK-251/CriaderodeTrucha.git
+cd CriaderodeTrucha
+cp .env.example .env
+docker compose up -d --build
+```
+
+| Servicio | URL | Puerto |
+|---|---|---|
+| Tablero | http://localhost:3000 | 3000 |
+| API | http://localhost:8000/api/v1 | 8000 |
+| Correo capturado (Mailpit) | http://localhost:8025 | 8025 |
+| Broker MQTT (servicios) | `mqtt://localhost:1883` | 1883 |
+| Broker MQTT (navegador) | `ws://localhost:9001` | 9001 |
+| PostgreSQL | `localhost:5432` | 5432 |
+
+Comprobar el estado de los contenedores:
+
+```bash
+docker compose ps
+```
+
+---
+
+## 4. Base de datos
+
+PostgreSQL 16 + TimescaleDB. Migraciones numeradas, con su reversión.
+
+```bash
+./scripts/migrar.sh --seed      # aplica V1–V4 y carga los datos semilla
+./scripts/revertir.sh           # revierte U4–U1 y deja la base vacía
+```
+
+| Migración | Contenido |
+|---|---|
+| `V1__esquema_pmv.sql` | 3 tipos enumerados, 7 tablas, hypertable `lectura`, `idx_lectura_reciente` |
+| `V2__indices.sql` | Índices de soporte al tablero y al panel de alertas |
+| `V3__auditoria.sql` | Columnas de auditoría y disparador de marca temporal (RNF-04) |
+| `V4__retencion.sql` | Fragmentos de 30 días, compresión a los 90 días, retención de 36 meses |
+
+**Datos semilla** — 3 usuarios (uno por rol), 4 estanques en distintas etapas
+productivas, 12 umbrales, 12 sensores y **103 692 lecturas** que cubren 30 días
+con ciclo diurno realista. `EST-03` reproduce el escenario del informe: umbral
+mínimo de oxígeno disuelto 5.5 mg/L con margen crítico 0.5, de modo que el
+límite crítico es exactamente 5.0 (casos CP-06 y CP-07).
+
+Diagrama entidad-relación: [`docs/arquitectura/er-pmv.md`](docs/arquitectura/er-pmv.md).
+Consultas con presupuesto de tiempo: [`docs/arquitectura/consultas-criticas.md`](docs/arquitectura/consultas-criticas.md).
+
+---
+
+## 5. Simulación de sensores
+
+El servicio de ingesta se suscribe a `piscigranja/{estanque}/{parametro}`. Para
+publicar una lectura a mano y ver la cadena completa en acción:
+
+```bash
+docker compose exec mosquitto mosquitto_pub -h 127.0.0.1 -t piscigranja/EST-03/od_mgl -m '{"codigo_nodo":"N-07","medido_en":"2026-09-18T17:42:10-05:00","valor":4.2}'
+```
+
+Estado del servicio y del búfer:
+
+```bash
+curl http://localhost:8001/metricas
+```
+
+`pendientes` es el indicador que revela un corte de enlace: si crece de forma
+sostenida, las lecturas se están acumulando porque el núcleo no responde. El
+búfer es un SQLite en un volumen con nombre, de modo que sobrevive al reinicio
+del contenedor (RNF-02).
+
+`scripts/simular_sensores.py` publica lecturas igual que lo harían los nodos
+reales, para provocar cada escenario sin hardware físico. Bajar el oxígeno de
+un estanque de verdad para comprobar que la alerta funciona significa estresar
+a las truchas; aquí basta un argumento.
+
+```bash
+docker compose exec -T ingesta-service python /srv/scripts/simular_sensores.py --critico --host mosquitto
+```
+
+| Modo | Qué provoca | Caso |
+|---|---|---|
+| `--normal` | Lecturas dentro de rango en los 12 nodos | — |
+| `--advertencia` | OD bajo el mínimo pero sobre el crítico (5.10 en EST-03) | CP-06 |
+| `--critico` | OD bajo el límite crítico (4.20 en EST-03) | CP-07 |
+| `--sensor-averiado` | pH 14.80, fuera del rango del electrodo | CP-05 |
+| `--corte-enlace N` | Lote de N minutos con marcas del periodo sin conexión | CP-04 |
+| `--continuo` | Operación sostenida a intervalo real | — |
+
+Acepta `--estanque EST-03` para acotar, y `--host localhost` si lo ejecutas
+fuera de los contenedores.
+
+Preparar el entorno para una demostración, desde cero:
+
+```bash
+./scripts/cargar_datos_prueba.sh --escenario
+```
+
+---
+
+## 6. Ejecución de pruebas
+
+```bash
+./scripts/preparar_bd_pruebas.sh
+```
+
+```bash
+docker compose exec -T api-core php vendor/bin/phpunit
+```
+
+| Suite | Contenido | Requiere base de datos |
+|---|---|---|
+| `Unit` | Núcleo hexagonal: entidades, `ReglaUmbral` y casos de uso sobre dobles en memoria | No |
+| `Feature` | Los seis endpoints contra PostgreSQL real, en la base `sippt_test` | Sí |
+
+Calidad:
+
+```bash
+cd backend-core && vendor/bin/pint --test && vendor/bin/phpstan analyse --memory-limit=1G
+```
+
+```bash
+npx @stoplight/spectral-cli lint docs/openapi.yaml --ruleset .spectral.yaml
+```
+
+Servicio de ingesta:
+
+```bash
+docker compose exec -T ingesta-service python -m pytest -q
+```
+
+```bash
+docker compose exec -T ingesta-service python -m ruff check .
+```
+
+Tablero:
+
+```bash
+docker compose exec -T dashboard npx vitest run
+```
+
+```bash
+docker compose exec -T dashboard npx tsc --noEmit && docker compose exec -T dashboard npx next lint
+```
+
+> La construcción de producción (`npx next build`) sobrescribe el directorio
+> `.next` del servidor de desarrollo y lo deja inservible. Ejecútala solo con el
+> contenedor detenido, o reinicia el servicio después:
+> `docker compose restart dashboard`.
+
+**CP-09 · RNF-03** — el tablero debe resolver 20 estanques en menos de 3 s. Los
+datos semilla traen cuatro, así que la medición necesita su propio banco:
+
+```bash
+docker compose exec -T postgres-timescale psql -U sippt -d sippt < db/seeds/S3__carga_cp09.sql
+```
+
+Se retira con `S3__limpiar_cp09.sql`.
+
+**Suite de integración** — recorre `nodo → MQTT → ingesta → núcleo → BD →
+alerta → tablero` contra los servicios reales, sin dobles, y verifica los diez
+casos CP-01 a CP-10:
+
+```bash
+docker compose exec -T -w /srv/tests-integracion ingesta-service python -m pytest . -v -o addopts=""
+```
+
+Tarda unos cinco minutos: espera de verdad a que la ingesta despache el búfer.
+Al terminar imprime las mediciones.
+
+| Medición | Resultado | Meta | Informe |
+|---|---|---|---|
+| CP-07 · medición → alerta visible | **29.5 s** | < 300 s (RNF-01) | 41 s |
+| CP-09 · tablero completo | **1.12 s** | < 3 s (RNF-03) | 2.1 s |
+| CP-09 · API `/estanques` | 125 ms | — | — |
+| CP-04 · lote del búfer reenviado | 60 almacenadas, 0 duplicados | sin pérdidas | — |
+
+## 6.1 El tablero
+
+Una sola pantalla operativa, diseñada mobile-first y probada a 375 px de ancho.
+
+| Zona | Qué muestra |
+|---|---|
+| Resumen | Cuatro cifras: alertas abiertas, estanques en crítico, sin comunicación y monitoreados |
+| Alertas abiertas | Ordenadas por fecha descendente, con el formulario de atención (HU-05) |
+| Estado de los estanques | Tarjeta por estanque con semáforo, últimos valores, medidor de rango y antigüedad (HU-03) |
+| Tendencia | Gráfico del parámetro en riesgo, con la banda del rango aceptable |
+| Últimas lecturas | Tabla con los valores exactos |
+
+**Cada rol tiene su vista.** Cambian el acento (azul el operador, violeta el
+técnico, ciruela el veterinario) y el contenido, nunca la paleta del semáforo:
+
+| Rol | Orden de la pantalla | Además |
+|---|---|---|
+| Operador | Alertas · estanques · tendencia | Registra la atención de alertas (HU-05) |
+| Técnico | Alertas · estanques · tendencia · registrar estanque | Alta de estanques con sus umbrales (HU-01), con el error junto al campo |
+| Veterinario | Estanques · tendencia · alertas | Solo consulta |
+
+El semáforo **nunca comunica solo con color**: cada estado lleva una forma
+propia (círculo, triángulo, octógono, círculo tachado) y su palabra, y el texto
+va siempre en tinta normal, nunca en el color de estado. Un estanque que no reporta desde hace más de 15 minutos se marca como
+*sin comunicación*, y eso desplaza al semáforo — mostrarlo como «normal» sería
+afirmar algo que el sistema no puede saber.
+
+Las alertas aparecen **sin recargar**: el navegador se suscribe a
+`piscigranja/alertas` por el listener WebSocket del broker, y al recibir un
+aviso refresca el tablero desde el servidor.
+
+El token vive en una cookie `httpOnly` y nunca llega a JavaScript del
+navegador: el renderizado ocurre en el servidor y es él quien llama a la API.
+
+## 6.2 Contrato de la API
+
+Los seis endpoints de la Tabla 2 del informe están especificados en
+[`docs/openapi.yaml`](docs/openapi.yaml) (OpenAPI 3.0, validado con Spectral).
+
+| Endpoint | Método | Historia | Códigos |
+|---|---|---|---|
+| `/api/v1/lecturas` | POST | HU-02 | 201 · 207 · 422 |
+| `/api/v1/estanques` | GET | HU-03 | 200 |
+| `/api/v1/estanques` | POST | HU-01 | 201 · 422 |
+| `/api/v1/estanques/{id}/lecturas` | GET | HU-03 | 200 |
+| `/api/v1/alertas` | GET | HU-04 | 200 |
+| `/api/v1/alertas/{id}/atencion` | POST | HU-05 | 201 · 409 · 403 |
+
+Autenticación por token Bearer (`POST /api/v1/auth/login`). Usuarios semilla:
+`operador@`, `tecnico@` y `veterinario@sippt.local`, contraseña `sippt2026`.
+
+---
+
+## 7. Estructura del proyecto
+
+```
+.
+├── docker-compose.yml          # 5 servicios: BD, broker, núcleo, ingesta, tablero
+├── .env.example                # todas las variables de entorno
+├── .github/workflows/          # integración continua (Fase 7)
+├── backend-core/               # Laravel 11 · PHP 8.3 — núcleo hexagonal
+│   ├── src/Domain/             #   entidades y política ReglaUmbral (sin framework)
+│   ├── src/Application/        #   casos de uso y puertos
+│   ├── src/Infrastructure/     #   adaptadores: HTTP y persistencia
+│   └── tests/{Unit,Feature}/
+├── ingesta-service/            # Python 3.12 · FastAPI · paho-mqtt
+│   ├── app/                    #   suscriptor, validador de calidad, cliente del núcleo
+│   └── tests/
+├── dashboard/                  # Next.js 14 · React 18 · TypeScript
+│   ├── app/
+│   ├── components/
+│   └── tests/
+├── db/
+│   ├── migrations/             # V1–V4
+│   └── seeds/                  # 4 estanques + 30 días de lecturas
+├── docs/
+│   ├── arquitectura/           # diagramas de paquetes, despliegue y ER
+│   ├── wireframes/             # tablero del PMV
+│   └── openapi.yaml            # contratos REST (Fase 3)
+├── infra/mosquitto/            # configuración del broker
+├── scripts/                    # migraciones, simulador y carga de datos
+└── tests-integracion/          # suite de la cadena completa (CP-01 a CP-10)
+```
+
+**Regla dura de arquitectura:** `backend-core/src/Domain/` no importa nada de
+Laravel, Eloquent, el broker MQTT ni la base de datos. La política `ReglaUmbral`
+debe ser testeable con PHPUnit puro.
+
+---
+
+## 7.1 Integración continua
+
+Cada cambio sobre `develop` y cada pull request dispara
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml), con cinco trabajos en
+paralelo y una puerta final:
+
+| Trabajo | Qué verifica |
+|---|---|
+| `migraciones` | Aplica V1–V5, carga semillas, revierte U5–U1 y vuelve a aplicar sobre base limpia |
+| `backend` | Pint · PHPStan nivel 6 · PHPUnit con cobertura · pureza del núcleo |
+| `ingesta` | Ruff · pytest con umbral de cobertura al 80 % |
+| `dashboard` | ESLint · TypeScript estricto · vitest · construcción de producción |
+| `contrato` | Spectral sobre `docs/openapi.yaml` |
+| `verificacion` | Puerta final: falla si cualquiera de los anteriores falló |
+
+El trabajo `backend` repite por su cuenta la comprobación de que `src/Domain/`
+no importa nada del framework. Es redundante con `PurezaDelNucleoTest`, y a
+propósito: si alguien desactivara esa prueba, el pipeline seguiría impidiendo
+que el dominio dependa de la infraestructura.
+
+### Protección de rama
+
+`main` solo debe recibir fusiones desde `develop` con el pipeline en verde. Esa
+configuración **no vive en el repositorio** sino en GitHub, y hay que aplicarla
+a mano en *Settings → Branches → Add branch ruleset*:
+
+- Ramas objetivo: `main` y `develop`
+- *Require a pull request before merging* — con al menos una aprobación
+- *Require status checks to pass* — marcar **`Verificacion completa`**
+- *Block force pushes*
+
+Conviene exigir solo el check final y no los cinco por separado: así, añadir un
+trabajo nuevo al pipeline no obliga a tocar la configuración de GitHub.
+
+## 8. Contribución
+
+**Ramas** — `main` (protegida) ← `develop` ← `feature/*`
+
+```
+feature/hu{NN}-{descripcion-corta}     vida máxima: 3 días
+fix/{issue}-{descripcion}
+```
+
+**Commits** — Conventional Commits con el identificador de la historia:
+
+```
+feat(hu04): evaluar umbral de oxígeno disuelto y generar alerta
+```
+
+Todo pull request debe enlazar la historia, superar el pipeline (linters y
+pruebas) y contar con la aprobación de un integrante distinto del autor.
+
+**Calidad exigida** — PHPStan nivel 6 y Laravel Pint en el backend, Ruff en la
+ingesta, ESLint y TypeScript estricto en el tablero. Cobertura de la lógica
+principal superior al 80 %.
+
+---
+
+## 9. Equipo y licencia
+
+| Integrante | Responsabilidad en el incremento |
+|---|---|
+| Castillón Salazar, Ronald Roy | Requisitos, análisis y evaluación del incremento |
+| Pacheco Gaspar, Jean Brandon | Diseño, implementación, integración y despliegue |
+| Lindo Torres, Raúl Jesús | Pruebas, calidad del dato y monitoreo |
+
+Docente: Guevara Jiménez, Jorge Alfredo.
+
+**Versión** `v0.1.0-pmv` — Primer Incremento.
+
+Licencia de uso académico. Universidad Continental — 2026.
